@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- SLLIDAR A1 sensor integration macro -->
+  <xacro:macro name="sllidar_sensor" params="prefix:='' use_sim:=true">
+    
+    <!-- The lidar is already defined in the main URDF as "lidar_link" and "lidar_joint" -->
+    <!-- This macro only adds the conditional Gazebo tags or real hardware support -->
+    
+    <!-- Conditional Gazebo plugin or real hardware integration -->
+    <xacro:if value="${use_sim}">
+      <!-- Simulation: Use the Gazebo plugin already defined in main URDF -->
+      <!-- Keep the existing Gazebo configuration -->
+    </xacro:if>
+    
+    <xacro:unless value="${use_sim}">
+      <!-- Remove Gazebo plugin for the lidar when using real hardware -->
+      <!-- The actual hardware will be managed by the sllidar_ros2 node -->
+      <!-- Clear existing Gazebo tags to make sure we don't have conflicting plugins -->
+      <gazebo reference="lidar_link">
+        <!-- Empty gazebo tag to override any simulation plugins -->
+        <!-- The real SLLIDAR will be controlled by the sllidar_node -->
+      </gazebo>
+    </xacro:unless>
+    
+  </xacro:macro>
+
+</robot> 

@@ -1,0 +1,10 @@
+sllidar_node:
+  ros__parameters:
+    channel_type: serial
+    serial_port: /dev/ttyUSB1
+    serial_baudrate: 115200
+    frame_id: lidar_link
+    inverted: false
+    angle_compensate: true
+    scan_mode: "Sensitivity"  # A1 default scan mode
+    use_sim_time: false 
