@@ -20,7 +20,7 @@ namespace naiscorp
             void disconnect();
             bool connected() const;
 
-            std::string send_msg(const std::vector<char> &msg_to_send, bool print_output = true, size_t expected_response_length = 0);
+            std::string send_msg(const std::vector<char> &msg_to_send);
 
             struct MotorState
             {
@@ -31,7 +31,6 @@ namespace naiscorp
 
             std::vector<MotorState> read_state_values();
             void set_motor_values(char motor_id, char command_type, char value);
-            void set_pid_values(char motor_id, char kp, char ki, char kd);
 
         private:
             LibSerial::SerialPort serial_conn_;

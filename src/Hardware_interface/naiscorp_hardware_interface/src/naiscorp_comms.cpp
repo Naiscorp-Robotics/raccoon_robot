@@ -1,5 +1,6 @@
-#include "naiscorp_hardware_interface/serial.h"
+#include "naiscorp_hardware_interface/naiscorp_comms.hpp"
 #include "naiscorp_hardware_interface/constants.h"
+#include <rclcpp/rclcpp.hpp>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -7,6 +8,8 @@
 
 namespace naiscorp
 {
+    // Create a static logger for this namespace
+    static const rclcpp::Logger LOGGER = rclcpp::get_logger("NaiscorpComms");
 
     LibSerial::BaudRate convert_baud_rate(int baud_rate)
     {
@@ -34,7 +37,7 @@ namespace naiscorp
         case 230400:
             return LibSerial::BaudRate::BAUD_230400;
         default:
-            std::cout << "Error! Baud rate " << baud_rate << " not supported! Default to BAUD_115200" << std::endl;
+            RCLCPP_ERROR(LOGGER, "Error! Baud rate %d not supported! Default to BAUD_115200", baud_rate);
             return LibSerial::BaudRate::BAUD_115200;
         }
     }
@@ -51,8 +54,8 @@ namespace naiscorp
         }
         catch (const LibSerial::OpenFailed &e)
         {
-            std::cerr << "Failed to open serial port: " << e.what() << std::endl;
-            std::cerr << "Try running with sudo or check if the device exists." << std::endl;
+            RCLCPP_ERROR(LOGGER, "Failed to open serial port: %s", e.what());
+            RCLCPP_ERROR(LOGGER, "Try running with sudo or check if the device exists.");
             throw;
         }
     }
@@ -70,7 +73,7 @@ namespace naiscorp
         return serial_conn_.IsOpen();
     }
 
-    std::string MCUComms::send_msg(const std::vector<char> &msg_to_send, bool print_output, size_t expected_response_length /* = 0 */)
+    std::string MCUComms::send_msg(const std::vector<char> &msg_to_send)
     {
         // Helper function to convert binary data to hex representation
         auto to_hex = [](const std::vector<char> &input)
@@ -85,7 +88,7 @@ namespace naiscorp
         };
 
         // Print raw data as hex
-        std::cout << "Raw data: " << to_hex(msg_to_send) << std::endl;
+        RCLCPP_INFO(LOGGER, "Send Raw Data: %s", to_hex(msg_to_send).c_str());
 
         serial_conn_.FlushIOBuffers(); // Clear buffers
 
@@ -93,10 +96,9 @@ namespace naiscorp
         std::string data_str(msg_to_send.begin(), msg_to_send.end());
         serial_conn_.Write(data_str);
 
-        std::string response = data_str;
-
-        return response;
+        return data_str;
     }
+
     std::vector<MCUComms::MotorState> MCUComms::read_state_values()
     {
         std::vector<MotorState> motor_states;
@@ -108,7 +110,7 @@ namespace naiscorp
             static_cast<char>(PAYLOAD_LENGTH_STATE_COMMAND),
             static_cast<char>(0x00) // payload rỗng → checksum giả định = 0
         };
-        send_msg(req, false);
+        send_msg(req);
 
         // 2) Đọc tất cả byte cho đến khi timeout
         std::vector<unsigned char> buffer;
@@ -127,12 +129,13 @@ namespace naiscorp
         }
 
         // 3) In debug raw dump
-        std::cout << "Received " << buffer.size() << " bytes:";
+        std::stringstream hex_stream;
+        hex_stream << "Received " << buffer.size() << " bytes:";
         for (auto byte : buffer)
         {
-            std::printf(" %02X", byte);
+            hex_stream << " " << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
         }
-        std::cout << "\n";
+        RCLCPP_INFO(LOGGER, "%s", hex_stream.str().c_str());
 
         // 4) Tách thành gói 6 byte (START_BYTE + 5 byte data)
         constexpr size_t PACKET_LEN = 10;
@@ -172,9 +175,7 @@ namespace naiscorp
             st.velocity = velocity;
             motor_states.push_back(st);
 
-            std::cout << "Motor ID=" << int(motor_id)
-                      << " POS="   << int(position)
-                      << " VEL="   << int(velocity) << "\n";
+            RCLCPP_INFO(LOGGER, "Receive: Motor ID=%d POS=%d VEL=%d", static_cast<int>(motor_id), static_cast<int>(position), static_cast<int>(velocity));
 
             // nhảy qua 6 byte vừa xử lý
             idx += PACKET_LEN - 1;
@@ -182,7 +183,6 @@ namespace naiscorp
 
         return motor_states;
     }
-
 
     void MCUComms::set_motor_values(char motor_id, char command_type, char value)
     {
@@ -195,8 +195,6 @@ namespace naiscorp
         packet.push_back(motor_id);
         packet.push_back(command_type);
         packet.push_back(value);
-
-        std::cout << "Value: " << static_cast<int>(value)  << std::endl;
 
         // Direct calculation of checksum (for verification)
         char direct_checksum = motor_id ^ command_type ^ value;
@@ -211,54 +209,16 @@ namespace naiscorp
         // Verify checksums match
         if (direct_checksum != checksum)
         {
-            std::cerr << "Warning: Checksum mismatch. Direct: 0x"
-                      << std::hex << static_cast<int>(direct_checksum & 0xFF)
-                      << ", Calculated: 0x" << static_cast<int>(checksum & 0xFF) << std::endl;
+            RCLCPP_WARN(LOGGER, "Warning: Checksum mismatch. Direct: 0x%02X, Calculated: 0x%02X", 
+                       static_cast<int>(direct_checksum & 0xFF), static_cast<int>(checksum & 0xFF));
         }
 
         // Add the calculated checksum
         packet.push_back(checksum);
 
         // Pass the vector directly to send_msg, expecting a 7-byte response
-        send_msg(packet, false, 7);
+        send_msg(packet);
     }
 
-    void MCUComms::set_pid_values(char motor_id, char kp, char ki, char kd)
-    {
-        std::vector<char> packet;
-
-        // Add all bytes to the packet (without checksum initially)
-        packet.push_back(START_BYTE);
-        packet.push_back(PACKET_TYPE_PID_COMMAND);
-        packet.push_back(PAYLOAD_LENGTH_PID_COMMAND);
-        packet.push_back(motor_id);
-        packet.push_back(kp);
-        packet.push_back(ki);
-        packet.push_back(kd);
-
-        // Direct calculation of checksum (for verification)
-        char direct_checksum = motor_id ^ kp ^ ki ^ kd;
-
-        // Calculate checksum by XORing all bytes after payload length
-        char checksum = 0;
-        for (size_t i = 3; i < packet.size(); i++)
-        {
-            checksum ^= packet[i];
-        }
-
-        // Verify checksums match
-        if (direct_checksum != checksum)
-        {
-            std::cerr << "Warning: Checksum mismatch. Direct: 0x"
-                      << std::hex << static_cast<int>(direct_checksum & 0xFF)
-                      << ", Calculated: 0x" << static_cast<int>(checksum & 0xFF) << std::endl;
-        }
-
-        // Add the calculated checksum
-        packet.push_back(checksum);
-
-        // Pass the vector directly to send_msg
-        send_msg(packet,false);
-    }
 
 } // namespace naiscorp

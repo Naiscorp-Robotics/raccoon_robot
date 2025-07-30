@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
@@ -29,7 +30,6 @@ struct Config
 {
   std::string left_wheel_name = "";
   std::string right_wheel_name = "";
-  float loop_rate = 0.0;
   std::string device = "";
   int baud_rate = 0;
   int timeout_ms = 0;
@@ -84,9 +84,13 @@ private:
   Config cfg_;
   Wheel wheel_l_;
   Wheel wheel_r_;
+  
   // Timer-related members for 10ms interval execution
   std::chrono::steady_clock::time_point start_time_;
   std::chrono::steady_clock::time_point last_timer_execution_[2];
+
+  // Define MAX_RPM as a constant instead of hardcoding 333
+  unsigned char MAX_RPM = 37;
 };
 
 }  // namespace NAISCORP_ROBOT

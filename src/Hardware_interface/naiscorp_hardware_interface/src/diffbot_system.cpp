@@ -28,12 +28,12 @@ hardware_interface::CallbackReturn NaiscorpRobotHardware::on_init(
 
   cfg_.left_wheel_name = info_.hardware_parameters["left_wheel_name"];
   cfg_.right_wheel_name = info_.hardware_parameters["right_wheel_name"];
-  cfg_.loop_rate = std::stof(info_.hardware_parameters["loop_rate"]);
   cfg_.device = info_.hardware_parameters["device"];
   cfg_.baud_rate = std::stoi(info_.hardware_parameters["baud_rate"]);
   cfg_.timeout_ms = std::stoi(info_.hardware_parameters["timeout_ms"]);
   cfg_.wheel_diameter = std::stoi(info_.hardware_parameters["wheel_diameter"]);
-  
+
+
   // Attempt to get PID values if provided, otherwise use defaults
   if (info_.hardware_parameters.count("pid_p") > 0) {
     cfg_.pid_p = std::stoi(info_.hardware_parameters["pid_p"]);
@@ -188,14 +188,6 @@ hardware_interface::CallbackReturn NaiscorpRobotHardware::on_activate(
     comms_.connect(cfg_.device, cfg_.baud_rate, cfg_.timeout_ms);
     RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), "Successfully connected to device %s", cfg_.device.c_str());
 
-    // Set PID values if configured
-    if (cfg_.pid_p || cfg_.pid_i || cfg_.pid_d) {
-      RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), 
-                  "Setting PID values: P=%d, I=%d, D=%d", cfg_.pid_p, cfg_.pid_i, cfg_.pid_d);
-      
-      comms_.set_pid_values(naiscorp::LEFT_WHEEL, cfg_.pid_p, cfg_.pid_i, cfg_.pid_d);
-      comms_.set_pid_values(naiscorp::RIGHT_WHEEL, cfg_.pid_p, cfg_.pid_i, cfg_.pid_d);
-    }
   } catch (const std::exception & e) {
     RCLCPP_ERROR(rclcpp::get_logger("NaiscorpRobotHardware"), 
                 "Failed to activate: %s", e.what());
@@ -240,12 +232,16 @@ hardware_interface::return_type NaiscorpRobotHardware::read(
   }
 
   try {
+
+    // Check if 10ms have elapsed since last timer execution
     auto current_time = std::chrono::steady_clock::now();
     auto duration_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_timer_execution_[1]);
+    auto duration_since_send = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_timer_execution_[0]);
+    RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), "Receive timer: %dms      Duration since send: %dms", duration_since_last, duration_since_send);
+
+    // Update last execution time
     last_timer_execution_[1] = current_time;
     
-    RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), "Receive Time: %dms", duration_since_last);
-
     // Request motor state data
     auto motor_states = comms_.read_state_values();
     // Process each motor state
@@ -253,20 +249,20 @@ hardware_interface::return_type NaiscorpRobotHardware::read(
       switch (state.motor_id) {
         case naiscorp::LEFT_WHEEL:
           wheel_l_.pos = (state.position/2970)*2*M_PI;
-          wheel_l_.vel = ((state.velocity* 3.14159265f * cfg_.wheel_diameter) / 60000.0f) / (cfg_.wheel_diameter/2000.0f); // Convert to m/s using proper radius
+          wheel_l_.vel = ((state.velocity* M_PI * cfg_.wheel_diameter) / 60000.0f) / (cfg_.wheel_diameter/2000.0f); // Convert to m/s using proper radius
           break;
 
         case naiscorp::RIGHT_WHEEL:
           wheel_r_.pos = (state.position/2970)*2*M_PI;
-          wheel_r_.vel = ((state.velocity* 3.14159265f * cfg_.wheel_diameter) / 60000.0f) / (cfg_.wheel_diameter/2000.0f); // Convert to m/s using proper radius
+          wheel_r_.vel = ((state.velocity* M_PI * cfg_.wheel_diameter) / 60000.0f) / (cfg_.wheel_diameter/2000.0f); // Convert to m/s using proper radius
           break;
 
         default:
           // Ignore other motor IDs as we only care about the wheels
           break;
       }
+      
     }
-
     return hardware_interface::return_type::OK;
   } catch (const std::exception & e) {
     RCLCPP_ERROR(rclcpp::get_logger("NaiscorpRobotHardware"), "Error during read: %s", e.what());
@@ -275,20 +271,23 @@ hardware_interface::return_type NaiscorpRobotHardware::read(
 }
 
 hardware_interface::return_type NaiscorpRobotHardware::write(
-  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & time, const rclcpp::Duration & period)
 {
   if (!comms_.connected()) {
     return hardware_interface::return_type::ERROR;
   }
-
+  
   try {
-    // Define MAX_RPM as a constant instead of hardcoding 333
-    constexpr unsigned char MAX_RPM = 37;
+    // Check if 10ms have elapsed since last timer execution
     auto current_time = std::chrono::steady_clock::now();
     auto duration_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_timer_execution_[0]);
+
+    RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), "Send timer: %dms", duration_since_last);
+
+    // Update last execution time
     last_timer_execution_[0] = current_time;
     
-    RCLCPP_INFO(rclcpp::get_logger("NaiscorpRobotHardware"), "Send Time: %dms", duration_since_last);
+    
     // Convert velocity commands to appropriate format for motors
     // The conversion is from m/s to RPM:
     // RPM = (linear_velocity_m_s / (PI * wheel_diameter_m)) * 60
@@ -323,15 +322,8 @@ hardware_interface::return_type NaiscorpRobotHardware::write(
       right_value = std::min(static_cast<unsigned char>(right_rpm), MAX_RPM);
       comms_.set_motor_values(naiscorp::RIGHT_WHEEL, naiscorp::COMMAND_TYPE_VELOCITY_MINUS, right_value);
     }
-    
-    // Comment out the debug log as it's not needed in normal operation
-    /*
-    RCLCPP_DEBUG(rclcpp::get_logger("NaiscorpRobotHardware"), 
-                "Write commands: left=%f (%d RPM), right=%f (%d RPM)",
-                wheel_l_.cmd, left_value, wheel_r_.cmd, right_value);
-    */
-
-    return hardware_interface::return_type::OK;
+  
+    return hardware_interface::return_type::OK; 
   } catch (const std::exception & e) {
     RCLCPP_ERROR(rclcpp::get_logger("NaiscorpRobotHardware"), "Error during write: %s", e.what());
     return hardware_interface::return_type::ERROR;
